@@ -15,3 +15,6 @@
 .idea/
 
 /setup.sh
+
+# Python bytecode
+__pycache__/
