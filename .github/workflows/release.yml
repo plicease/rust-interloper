@@ -1,0 +1,20 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+
+concurrency: release-${{ github.ref }}
+
+
+permissions:
+  contents: write
+
+
+jobs:
+  release:
+    uses: uperl/action-rust-release-bin/.github/workflows/release.yml@v1
+    with:
+      publisher: "plicease"
+

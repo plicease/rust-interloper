@@ -1,0 +1,25 @@
+[package]
+name = "interloper"
+version = "0.1.0"
+edition = "2024"
+description = "INTERLINK for Linux"
+repository = "https://github.com/plicease/interloper"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0.104"
+
+
+[package.metadata.deb]
+maintainer = "Nobody <devnull@wdlabs.com>"
+copyright = "Nobody"
+extended-description = """\
+INTERLINK for Linux"""
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/interloper", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/interloper/README.md", "644"],
+    ["LICENSE", "usr/share/doc/interloper/LICENSE", "644"],
+]
+
