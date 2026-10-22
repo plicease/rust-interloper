@@ -14,7 +14,25 @@ Line format:
 
 `C>S` is client to server and `S>C` is server to client. Chunk boundaries are
 only where the PTY read happened to split the stream, not protocol packet
-boundaries. Both sides exchange `fd` bytes while the link is idle.
+boundaries. While the link is idle both sides exchange `fc` or `fd` bytes.
+
+## Decoding
+
+`../decode.py` turns a log into protocol events (see `docs/protocol.md`):
+
+```sh
+emu/dos622/decode.py emu/dos622/captures/dir-copy-9600-marked.log
+emu/dos622/decode.py LOG --link     # also show flags and turnarounds
+emu/dos622/decode.py LOG --hex      # also show packet bytes
+emu/dos622/decode.py LOG --image 2=SERVER/dos622.img@63 --image 1=SERVER/fixture.img
+```
+
+`--image` checks the data of every READ against the server's disk images.
+C: is the partition starting at sector 63 of `dos622.img`; B: is
+`fixture.img`. Both logs here decode with no anomalies, and all their reads
+matched the images of the VMs that produced them. Those VMs are not kept, and
+a fresh build has different volume serial numbers, so its boot sectors will
+not match the old logs.
 
 ## Files
 

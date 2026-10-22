@@ -83,6 +83,12 @@ redirected drives and announces each step on COM2, which `capture.py` logs
 as `MARK` lines. Every client has `C:\CAPTURE.BAT`, so it can also be run by
 hand. Saved captures are in `captures/`.
 
+### Decoding
+
+`decode.py` splits a capture into protocol events, and can check READ data
+against the server's images; see `captures/README.md` and
+`docs/protocol.md`.
+
 ### Interactive session
 
 1. Start the server VM, then the client VM. Each creates its `com1.pty`
