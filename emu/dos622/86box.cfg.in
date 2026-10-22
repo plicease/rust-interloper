@@ -31,8 +31,14 @@ hdd_01_speed = 1997_5400rpm
 @FDD@
 [Ports (COM & LPT)]
 serial1_device = stdio
+serial2_device = stdio
 
 [Virtual Console (COM) #1]
 mode = 3
 command = ln -sfn "$PTY" "@PTY@"
+command_terminal = 0
+
+[Virtual Console (COM) #2]
+mode = 3
+command = ln -sfn "$PTY" "@PTY2@"
 command_terminal = 0

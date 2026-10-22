@@ -17,8 +17,9 @@ MS-DOS 6.22, wired together over COM1 for protocol captures:
 - 3.5" 1.44MB A: drive; the server also has a B: drive holding the fixture.
 - Generic ISA IDE controller with a 32MB disk: 65 cylinders, 16 heads,
   63 sectors (BIOS user drive type 47).
-- COM1 at 3F8 and COM2 at 2F8. COM1 is a host pseudo-terminal, and 86Box
-  symlinks it to `<vm>/com1.pty` while the VM runs.
+- COM1 at 3F8 and COM2 at 2F8, both host pseudo-terminals. While the VM
+  runs, 86Box symlinks them to `<vm>/com1.pty` and `<vm>/com2.pty`. COM1
+  carries INTERLNK; the client's `CAPTURE.BAT` writes step markers to COM2.
 
 ## Building
 
@@ -34,7 +35,8 @@ emu/dos622/build.py \
 
 `--out` may be repeated to write the same VMs to several places. Existing
 VMs are only replaced with `--force`. A build takes a few minutes and needs
-no interaction.
+no interaction. `--capture` makes the client run `C:\CAPTURE.BAT` at the end
+of `AUTOEXEC.BAT`; build those VMs into their own `--out` directory.
 
 What it does:
 
@@ -66,6 +68,23 @@ directory `EMPTYDIR`. Their SHA-256 sums are in
 
 ## Capturing traffic
 
+### Scripted session
+
+Build a capture pair, then let `capture.py` start the server and client,
+relay and log COM1, and stop both VMs when the client finishes:
+
+```sh
+emu/dos622/build.py --capture --floppies DIR --out /tmp/dos622-capture
+xvfb-run emu/dos622/capture.py --vms /tmp/dos622-capture --log capture.log
+```
+
+`CAPTURE.BAT` (in `roles/client/`) runs `DIR` and `COPY` against the
+redirected drives and announces each step on COM2, which `capture.py` logs
+as `MARK` lines. Every client has `C:\CAPTURE.BAT`, so it can also be run by
+hand. Saved captures are in `captures/`.
+
+### Interactive session
+
 1. Start the server VM, then the client VM. Each creates its `com1.pty`
    symlink when it starts.
 2. Start the relay, which forwards bytes between the two PTYs and logs them:
@@ -80,7 +99,8 @@ directory `EMPTYDIR`. Their SHA-256 sums are in
    was not running yet, type `INTERLNK` on the client to connect.
 
 Each log line is the time in seconds, the direction (`C>S` or `S>C`), the
-byte count and the bytes in hex.
+byte count and the bytes in hex. Add `--marks <client>/com2.pty` to log lines
+the client writes to COM2.
 
 The relay does not pace bytes at 9600 baud: timing comes from each VM's
 emulated UART. Restart the relay whenever a VM restarts, because 86Box
