@@ -7,13 +7,16 @@ such, and open questions are listed at the end.
 
 ## Sources
 
-- Captures: `emu/dos622/captures/*.log`, recorded at 9600 baud between
-  INTERLNK 1.00 (client) and INTERSVR 1.10 (server). The log format is
-  described in that directory's README.
+- Captures: `emu/dos622/captures/*.log`, between INTERLNK 1.00 (client) and
+  INTERSVR 1.10 (server): reads, writes, reconnects at 9600 baud, and a speed
+  change to 115200. The log format and the list of captures are in that
+  directory's README.
 - Decoder: `emu/dos622/decode.py` applies the rules below to a capture. It
   reports any byte that breaks them as an anomaly. With `--image` it checks
-  every READ against the server's disk images. Both captures decode with no
-  anomalies, and all 170 READs match the images byte for byte.
+  READ and WRITE data against the server's disk images. The captures decode
+  with no anomalies, apart from the client's unanswered idle bytes while
+  the server was restarting. All 520 READs and 139 written sectors match the
+  images, apart from two sectors read before they were rewritten.
 - Reference: [sarahemm/ruby-interlnk](https://github.com/sarahemm/ruby-interlnk)
   (MIT), a client-side implementation. Used as a lead only; every rule here
   was checked against the captures. Where it differs from the captures, the
@@ -43,20 +46,61 @@ The client sends three bytes and the server answers each one:
 | `55`   | `ff`   |
 | `5a`   | `11`   |
 
-INTERLNK also sends a lone `aa` when it loads. If nothing answers, it tries
-again on the first access to a redirected drive. Both captures connect that
-way.
+INTERLNK also sends a lone `aa` when it loads. If the server answers, it
+connects there and then, and fetches DRIVE-INFO for its load-time drive table
+(`reconnect-9600.log`, second boot). If nothing answers, it tries again on
+the first access to a redirected drive (both `dir-copy` captures).
 
-`ruby-interlnk` follows the handshake with a baud-rate negotiation (`ff`,
-then a speed index). That negotiation does not appear at 9600 baud (see open
-questions).
+### Reconnection
+
+There is no disconnect message. Either side may vanish and come back, and
+the client simply starts again with the handshake, SERVER-INFO and INIT:
+
+- **Client restarted.** The client had been sending idle bytes for the
+  server to echo. When it stopped, the line went quiet, and the server sent
+  nothing on its own. When the new client loaded 22 s later, the server
+  answered its handshake straight away and ran a normal session start.
+- **Server restarted.** The client sent idle `fc` about every 55 ms for
+  0.6 s with no echo, then stopped. Nothing more was sent until the next
+  drive access 44 s later, which began with a fresh handshake, SERVER-INFO
+  and INIT. The client's DOS saw no error. The client then repeated
+  MEDIA-CHECK and BUILD-BPB before reading again.
+
+### Speed change
+
+The handshake runs at 9600 baud. If both sides allow a higher speed, the
+client then steps up one speed at a time (`baud-default.log`, where neither
+side has `/BAUD`, so both allow 115200). Each step is a series of byte
+pairs, the client's byte first:
+
+| Client | Server | Notes |
+|--------|--------|-------|
+| `ff` | `00` | start of a speed change |
+| `k` | `k << 4` | speed index `k` |
+| `k << 4` | `~(k << 4)` | |
+| 15 bytes | 15 bytes | fixed test pattern, below |
+
+Test pattern, client: `ff 00 5a 55 aa f0 0f e7 7e c3 3c 81 18 00 ff`;
+server: `00 ff a5 aa 55 f0 0f ff 00 18 81 3c c3 7e e7`.
+
+| Index | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|-------|---|---|---|---|---|---|---|---|
+| Baud | 1200 | 2400 | 4800 | 9600 | 19200 | 38400 | 57600 | 115200 |
+
+The capture shows steps to 4, 5, 6 and 7, all passing, with the first
+packet straight after. With `/BAUD:9600` on both sides there is no speed
+change at all. The relay carries bytes whatever the emulated UART speed is,
+so the capture cannot show the moment each side switches, or what happens
+when the test pattern fails. The index table and the pattern agree with
+`ruby-interlnk`.
 
 ### Packet transfer
 
 The sender of a packet does this:
 
 1. It sends a **flags** byte `F`.
-2. The receiver acknowledges with `~F & 0xFB`.
+2. The receiver acknowledges with `~F ^ 0x04` (the complement of `F` with
+   bit 2 flipped back).
 3. It sends the **frame**.
 4. The receiver echoes `F` once the frame's CRC has checked out.
 
@@ -66,7 +110,8 @@ Flags byte:
 |------|---------|
 | 7 (`0x80`) | set: the frame has a 1-byte length; clear: a 2-byte length |
 | 6 (`0x40`) | more packets of the same reply follow (multi-block reads) |
-| 2–5 | always 0 in the captures |
+| 3–5 | always 0 in the captures |
+| 2 (`0x04`) | echo mode, see below |
 | 0–1 | sequence number, modulo 4 |
 
 Frame:
@@ -86,6 +131,25 @@ Requests and short replies use 1-byte lengths. Sector data uses 2-byte
 lengths. A packet carries at most 8192 bytes, which is the `max_block` both
 sides announce in SERVER-INFO (see Commands). Larger replies are split into
 8192-byte packets with flag bit 6 set on all but the last.
+
+### Lost packets and echo mode
+
+If the flags echo does not come, the sender waits about 0.57 s and sends the
+packet again with the same sequence number and flag bit 2 set. In this
+**echo mode** the frame goes one byte at a time: the receiver echoes each
+byte straight back, except the last, which it answers with the flags echo.
+For example, the client's `00 00` SERVER-INFO announcement:
+
+```
+C: 80  S: 7b  C: 02 00 00 5d 03       (no echo: lost)
+C: 84  S: 7f  C: 02  S: 02  C: 00  S: 00  C: 00  S: 00  C: 5d  S: 5d  C: 03  S: 84
+```
+
+At 115200 baud in the emulator, the first packet in each direction was lost
+(the 8 MHz 286 probably cannot keep up), and both sides then used echo mode
+for every packet for the rest of the session. Each side only uses echo mode
+for packets it sends, after one of its own packets was lost. No packet was
+lost at 9600.
 
 ### Turnaround and sequence numbers
 
@@ -126,7 +190,7 @@ on. Multi-byte fields are little-endian.
 
 The command numbers are INTERLNK's own. Some sit one above the matching DOS
 device driver command (media check 1→`02`, build BPB 2→`03`), but read keeps
-4, and generic IOCTL 0x13 becomes `1d`.
+4, write 8 becomes `05`, and generic IOCTL 0x13 becomes `1d`.
 
 ### Session start
 
@@ -150,8 +214,8 @@ Request (34 bytes):
 | 11 | 1 | 1 | CRC supported? |
 | 12 | 2 | 8192 | maximum serial block size |
 | 14 | 12 | 0 | reserved |
-| 26 | 4 | `b010ffd9` | client ID |
-| 30 | 4 | 0 | last server ID |
+| 26 | 4 | varies | client ID |
+| 30 | 4 | 0 or ID | server ID from this client's previous session |
 
 Reply (33 bytes):
 
@@ -164,8 +228,16 @@ Reply (33 bytes):
 | 10 | 1 | 1 | CRC? |
 | 11 | 2 | 8192 | maximum serial block size |
 | 13 | 12 | 0 | reserved |
-| 25 | 4 | 0 | last client ID |
-| 29 | 4 | varies | server ID (different in each capture) |
+| 25 | 4 | 0 or ID | client ID from this server's previous session |
+| 29 | 4 | varies | server ID |
+
+Each program picks its ID when it starts and keeps it for its lifetime, and
+each side reports the ID it last saw from the other. After a client restart
+the server's reply carried the old client's ID; after a server restart the
+client's request carried the old server's ID. Neither side refused a
+mismatch, so the IDs seem to be only for spotting a reconnect. The IDs look
+random: client `b010ffd9` (four first boots), `1814b9dd` and `9c1fbfdf`;
+server `773e6970`, `773a9434`, `773d419b`, `773d55dd` and `6a2931e7`.
 
 #### `01` INIT
 
@@ -264,6 +336,41 @@ sector count transferred). The data follows in packets of at most 8192 bytes,
 with 2-byte lengths. For example, a 127-sector read came back as seven 8192-byte
 packets and one of 7680 bytes.
 
+#### `05` WRITE
+
+The request has the same 11-byte layout as READ, with command `05`. The
+client sends the sector data straight after the request, before turning
+around, in the same packets of at most 8192 bytes: a 127-sector write was
+seven 8192-byte packets and one of 7680. The server then answers with a
+4-byte status packet (status word, sectors written) and nothing else.
+
+A write to the server's write-protected B: was refused with status `8100`
+and a count of 0: the error bit, the done bit, and DOS error code 0, "write
+protect violation". The client's DOS then raised its usual critical error.
+The reply came 0.6 s after the request, the same as a successful one-sector
+write, so the server does not appear to retry.
+
+DOS writes FAT copies itself, so creating or deleting a file is a series of
+one-sector WRITEs to the directory and both FATs (for example sectors 127, 9
+and 72 on the server's C:, where the second FAT starts 63 sectors after the
+first). No other command appears for file creation, deletion or `MD`.
+
+#### `1c` DRIVE-INFO
+
+Request: `1c unit`. Sent only when INTERLNK connects at load, once per
+mapped drive, to fill in its "D: equals C: (32Mb) DOS622" table. The reply
+is 23 bytes: a NUL-terminated size string in a 10-byte field, then a
+NUL-terminated volume label in a 13-byte field.
+
+| Unit | Reply |
+|------|-------|
+| 2 (C:) | `(32Mb)`, `DOS622` |
+| 1 (B:, floppy) | both empty |
+
+The floppy reply has only the first byte of each field zeroed. The rest is
+the hard disk's reply left in the buffer, so the server seems to leave these
+fields empty for removable drives rather than touch the disk.
+
 #### `1d` GENERIC-IOCTL
 
 Request: `1d unit category function`. Only category `08`, function `66`
@@ -279,11 +386,14 @@ bytes:
 
 ### Status word
 
-Replies start with a 16-bit status word. READ and GENERIC-IOCTL return
-`0100`, the DOS "done" bit. MEDIA-CHECK and BUILD-BPB return `01xx`, where
-the low byte was `01`, `02` or `09`. DOS ignores the low byte unless the
-error bit (`0x8000`) is set, so these are probably left over from the server
-(see open questions).
+Replies start with a 16-bit status word, which matches the status field of
+a DOS device driver request header: `0x8000` is the error bit, `0x0100` is
+"done", and the low byte is a DOS device error code when the error bit is
+set. READ, WRITE and GENERIC-IOCTL return `0100` on success, and a refused
+write returned `8100` (error 0, write protect). MEDIA-CHECK and BUILD-BPB
+return `01xx`, where the low byte was `01`, `02` or `09`. DOS ignores the low
+byte unless the error bit is set, so these are probably left over in a
+register on the server.
 
 ## Consequences for Interloper
 
@@ -297,24 +407,34 @@ error bit (`0x8000`) is set, so these are probably left over from the server
   `fixture.img`) is served from offset 0.
 - Reads arrive as 32-bit sector numbers, so volumes over 32MB should not need
   special handling. This is unverified.
+- The server must answer a fresh handshake at any time, since a client that
+  restarts or loses the server just starts again. Remembering the last
+  client ID is optional, as INTERLNK accepts anything there.
+- With no `/BAUD` limit, the client changes speed right after the handshake.
+  The server has to follow the speed change and must handle echo-mode
+  packets, which the client switches to after any lost packet.
+- DRIVE-INFO needs a size string and a label for each drive.
+- A read-only server can refuse every WRITE with status `8100` and count 0,
+  after taking the data packets that follow the request. The client then
+  shows "Write protect error", exactly as for INTERSVR with a write-protected
+  disk.
 
 ## Open questions
 
-- Writes: command number, request layout, and how the server reports
-  write-protect. No write is captured yet.
-- The baud negotiation `ruby-interlnk` performs at 115200 is absent at 9600.
-  Is it only sent when changing speed?
-- What the low byte of the `01xx` status word in MEDIA-CHECK and BUILD-BPB
-  replies means.
+- Whether `06` is a write with verify, as DOS has separate device commands
+  for the two. Only `05` has been seen.
+- Speed change: when each side switches its UART, and what the client does
+  when the test pattern fails at some speed. This needs real serial ports
+  or an emulated link that enforces the line speed.
+- Whether echo mode is ever switched off again within a session.
 - The 6 bytes after the BPB in BUILD-BPB replies.
 - The 2-byte `00 00` packet before the SERVER-INFO request: is it a command
   header, or a separate announcement?
-- The client ID was `b010ffd9` in both captures, even though they came from
-  different builds; the server ID changed. How are they derived, and does
-  the server check them on reconnect?
-- Error replies: a missing sector, a bad unit, or a CRC failure. What does a
-  receiver send instead of the echo (a NAK)?
-- Disconnect and reconnect behaviour.
+- How the client and server IDs are derived. The first client boot always
+  had `b010ffd9`.
+- Error replies: a missing sector or a bad unit. A lost frame is resent
+  after a timeout, but whether a receiver can reject a frame with a bad CRC
+  sooner (a NAK) is unknown.
 - INIT field meanings beyond the drive map (drive count, attribute table,
   multitasking flag).
 - Other commands INTERLNK can send: open/close, removable-media check,

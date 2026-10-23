@@ -313,15 +313,13 @@ def crlf(path):
     return path.read_text().replace("\r\n", "\n").replace("\n", "\r\n").encode("ascii")
 
 
-def payload_floppy(role, path, capture=False):
+def payload_floppy(role, path):
     """Write the floppy DOS sees as A: while a role is customised."""
     files = {}
-    for name in ("CONFIG.SYS", "AUTOEXEC.BAT", "INSTALL.BAT", "CAPTURE.BAT"):
+    for name in ("CONFIG.SYS", "AUTOEXEC.BAT", "INSTALL.BAT"):
         src = HERE / "roles" / role / name
         if src.exists():
             files[name] = crlf(src)
-    if capture and role == "client":
-        files["AUTOEXEC.BAT"] += b"CALL C:\\CAPTURE.BAT\r\n"
     if role == "server":
         files.update({f"FIXTURE/{name}": data for name, data in fixture_files().items()})
     fat12_floppy(path, files, label="PAYLOAD")
@@ -427,13 +425,13 @@ def install_base(floppies, work):
     return disk
 
 
-def customise(role, base, work, capture=False):
+def customise(role, base, work):
     """Copy the base disk and apply a role's files; return (disk, floppy)."""
     log(f"customising {role}")
     disk = work / f"{role}.img"
     shutil.copyfile(base, disk)
     payload = work / f"{role}-payload.img"
-    payload_floppy(role, payload, capture)
+    payload_floppy(role, payload)
     drives = [
         "-drive", f"if=floppy,index=0,file={payload},format=raw,readonly=on",
         "-drive", f"if=none,id=hd,file={disk},format=raw",
@@ -509,8 +507,6 @@ def main():
     p.add_argument("--out", type=Path, action="append", required=True,
                    help="directory to write the VMs into (repeatable)")
     p.add_argument("--force", action="store_true", help="replace existing VMs")
-    p.add_argument("--capture", action="store_true",
-                   help="make the client run CAPTURE.BAT from AUTOEXEC.BAT (see capture.py)")
     args = p.parse_args()
 
     for out in args.out:
@@ -521,7 +517,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="dos622-") as tmp:
         work = Path(tmp)
         base = install_base(args.floppies.resolve(), work)
-        built = {role: customise(role, base, work, args.capture) for role in ROLES}
+        built = {role: customise(role, base, work) for role in ROLES}
         manifest = "".join(
             f"{hashlib.sha256(data).hexdigest()}  {name}\n"
             for name, data in sorted(fixture_files().items()) if data is not None)

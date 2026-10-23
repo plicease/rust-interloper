@@ -19,7 +19,7 @@ MS-DOS 6.22, wired together over COM1 for protocol captures:
   63 sectors (BIOS user drive type 47).
 - COM1 at 3F8 and COM2 at 2F8, both host pseudo-terminals. While the VM
   runs, 86Box symlinks them to `<vm>/com1.pty` and `<vm>/com2.pty`. COM1
-  carries INTERLNK; the client's `CAPTURE.BAT` writes step markers to COM2.
+  carries INTERLNK; capture scenarios write step markers to the client's COM2.
 
 ## Building
 
@@ -35,8 +35,7 @@ emu/dos622/build.py \
 
 `--out` may be repeated to write the same VMs to several places. Existing
 VMs are only replaced with `--force`. A build takes a few minutes and needs
-no interaction. `--capture` makes the client run `C:\CAPTURE.BAT` at the end
-of `AUTOEXEC.BAT`; build those VMs into their own `--out` directory.
+no interaction.
 
 What it does:
 
@@ -70,18 +69,33 @@ directory `EMPTYDIR`. Their SHA-256 sums are in
 
 ### Scripted session
 
-Build a capture pair, then let `capture.py` start the server and client,
-relay and log COM1, and stop both VMs when the client finishes:
+`capture.py` copies a built VM pair into a new work directory, installs a
+scenario, starts the server and then the client, relays and logs COM1, and
+stops both VMs when the client finishes:
 
 ```sh
-emu/dos622/build.py --capture --floppies DIR --out /tmp/dos622-capture
-xvfb-run emu/dos622/capture.py --vms /tmp/dos622-capture --log capture.log
+xvfb-run emu/dos622/capture.py --vms "$VMS" --scenario dir-copy \
+    --work /tmp/run-dir-copy --log capture.log
 ```
 
-`CAPTURE.BAT` (in `roles/client/`) runs `DIR` and `COPY` against the
-redirected drives and announces each step on COM2, which `capture.py` logs
-as `MARK` lines. Every client has `C:\CAPTURE.BAT`, so it can also be run by
-hand. Saved captures are in `captures/`.
+A scenario is a directory under `scenarios/` with `client/` and `server/`
+files that are written into the root of that VM's C: drive (`fatimg.py`
+does this without booting the VM). Each has a `client/CAPTURE.BAT`, which
+the client's `AUTOEXEC.BAT` runs under `COMMAND /F` so a critical error is
+answered with Fail rather than waiting for a key. It announces each step on
+COM2, which `capture.py` logs as `MARK` lines. A `HOST-RESTART-CLIENT` or
+`HOST-RESTART-SERVER` marker makes `capture.py` restart that VM while the
+relay keeps logging.
+
+| Scenario | Steps |
+|----------|-------|
+| `dir-copy` | `DIR` and `COPY` from both redirected drives. |
+| `write` | Create, overwrite and delete files and make a directory on D:, then a copy to the write-protected E:. |
+| `reconnect` | Restart the client mid-session, then restart the server. |
+| `baud-default` | `dir-copy` reads with no `/BAUD` on either side. |
+
+The work directory is kept so READ data can be checked against the server's
+images with `decode.py --image`. Saved captures are in `captures/`.
 
 ### Decoding
 
