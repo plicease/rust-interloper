@@ -11,7 +11,7 @@
 
 use std::fmt;
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::crc::{crc16, frame_ok};
 use crate::transport::Transport;
@@ -24,6 +24,13 @@ pub const HELLO: [(u8, u8); 3] = [(0xAA, 0x00), (0x55, 0xFF), (0x5A, 0x11)];
 
 /// Line speed for each speed index of a speed change.
 pub const BAUD: [u32; 8] = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
+
+/// How long a speed change may take at the new speed before going back to
+/// the old one. INTERLNK allows 10 timer ticks, which is 9 to 10 ticks
+/// depending on where the first one falls (0.49 to 0.55 s). It then goes
+/// back to its old speed and sends its next packet, which must not find us
+/// still at the new speed.
+pub const SPEED_TEST_TIME: Duration = Duration::from_millis(450);
 
 /// The speed change test pattern, as (client byte, server reply).
 pub const SPEED_TEST: [(u8, u8); 15] = [
@@ -265,7 +272,10 @@ impl<T: Transport> Link<T> {
         Ok(true)
     }
 
-    /// The rest of a speed change after `ff`.
+    /// The rest of a speed change after `ff`. INTERLNK switches as soon as
+    /// it has sent the speed index, so everything after the index is at the
+    /// new speed. If that fails, both sides go back to the old speed and
+    /// the client stays there.
     fn server_speed_change(&mut self) -> Result<()> {
         self.t.write_all(&[0x00])?;
         let k = self.read(self.timeouts.reply, "speed index")?;
@@ -273,29 +283,35 @@ impl<T: Transport> Link<T> {
             .get(usize::from(k))
             .ok_or_else(|| Error::Protocol(format!("speed index {k:#04x}")))?;
         if baud > self.max_baud {
-            // What INTERSVR answers to a speed above its /BAUD limit is not
-            // known yet; staying silent makes the client time out.
+            // Staying at the old speed: the client's test times out, and it
+            // goes back to this speed and stays there.
             return Err(Error::Protocol(format!(
                 "speed {baud} above {}",
                 self.max_baud
             )));
         }
-        self.t.write_all(&[k << 4])?;
-        // Assumed: both sides switch after the index pair, and the rest of
-        // the exchange checks the new speed. Not confirmed by a capture.
-        self.t.drain()?;
+        let old = self.baud;
         self.t.set_baud(baud)?;
         self.baud = baud;
+        let deadline = Instant::now() + SPEED_TEST_TIME;
+        self.t.write_all(&[k << 4])?;
         let mut pairs = vec![(k << 4, !(k << 4))];
         pairs.extend_from_slice(&SPEED_TEST);
         for (want, reply) in pairs {
-            let b = self.read(self.timeouts.reply, "speed test byte")?;
-            if b != want {
-                self.baud = self.base_baud;
-                self.t.set_baud(self.baud)?;
-                return Err(Error::Protocol(format!(
-                    "speed test at {baud}: got {b:#04x}, expected {want:#04x}"
-                )));
+            // Like the client, skip anything but the byte expected.
+            loop {
+                let left = deadline.saturating_duration_since(Instant::now());
+                match self.t.read_byte(left)? {
+                    Some(b) if b == want => break,
+                    Some(_) => {}
+                    None => {
+                        self.baud = old;
+                        self.t.set_baud(old)?;
+                        return Err(Error::Protocol(format!(
+                            "speed test at {baud} failed; back to {old}"
+                        )));
+                    }
+                }
             }
             self.t.write_all(&[reply])?;
         }
@@ -658,6 +674,67 @@ mod tests {
         let (block, baud) = server.join().unwrap();
         assert_eq!(block, Incoming::Block(vec![0, 0]));
         assert_eq!(baud, 115200);
+    }
+
+    /// Plays scripted input, and records what the link writes and when it
+    /// changes speed, which a socket cannot show.
+    struct Script {
+        input: std::collections::VecDeque<u8>,
+        log: Vec<String>,
+    }
+
+    impl Transport for Script {
+        fn read_byte(&mut self, _timeout: Duration) -> io::Result<Option<u8>> {
+            Ok(self.input.pop_front())
+        }
+
+        fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
+            self.log.extend(data.iter().map(|b| format!("{b:02x}")));
+            Ok(())
+        }
+
+        fn set_baud(&mut self, baud: u32) -> io::Result<()> {
+            self.log.push(format!("baud {baud}"));
+            Ok(())
+        }
+    }
+
+    /// A server link that has just read `ff`, with the client's bytes to
+    /// come.
+    fn speed_change_from(input: &[u8]) -> Link<Script> {
+        let script = Script {
+            input: input.iter().copied().collect(),
+            log: Vec::new(),
+        };
+        Link::new(script, 9600, 115200)
+    }
+
+    #[test]
+    fn speed_switches_after_the_index() {
+        // INTERLNK switches as soon as it has sent the index, so `k << 4`
+        // must go out at the new speed. Stray bytes are skipped.
+        let mut input = vec![0x04, 0x00, 0x40];
+        input.extend(SPEED_TEST.iter().map(|&(c, _)| c));
+        let mut s = speed_change_from(&input);
+        s.server_speed_change().unwrap();
+        let mut want = vec!["00", "baud 19200", "40", "bf"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        want.extend(SPEED_TEST.iter().map(|&(_, r)| format!("{r:02x}")));
+        assert_eq!(s.t.log, want);
+        assert_eq!(s.baud(), 19200);
+    }
+
+    #[test]
+    fn failed_speed_test_goes_back_to_the_old_speed() {
+        // A step from 19200 to 38400 whose test never arrives: back to
+        // 19200, where the client also goes back to.
+        let mut s = speed_change_from(&[0x05]);
+        s.baud = 19200;
+        assert!(matches!(s.server_speed_change(), Err(Error::Protocol(_))));
+        assert_eq!(s.t.log, ["00", "baud 38400", "50", "baud 19200"]);
+        assert_eq!(s.baud(), 19200);
     }
 
     #[test]

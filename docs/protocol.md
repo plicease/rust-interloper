@@ -17,6 +17,13 @@ such, and open questions are listed at the end.
   with no anomalies, apart from the client's unanswered idle bytes while
   the server was restarting. All 520 READs and 139 written sectors match the
   images, apart from two sectors read before they were rewritten.
+- Real hardware: `emu/dos622/captures/hardware/`, Interloper's traces of
+  INTERLNK on a NuXT (NEC V20) over a real serial cable at 9600 baud. A
+  failed speed change on that machine, which the emulator cannot show, led
+  to the next source.
+- Disassembly: the speed change routine of the MS-DOS 6.22 `INTERLNK.EXE`
+  (at offset `16ba` of its load image), read only to find when the client
+  switches its UART. Nothing from it is in this repository.
 - Reference: [sarahemm/ruby-interlnk](https://github.com/sarahemm/ruby-interlnk)
   (MIT), a client-side implementation. Used as a lead only; every rule here
   was checked against the captures. Where it differs from the captures, the
@@ -89,10 +96,29 @@ server: `00 ff a5 aa 55 f0 0f ff 00 18 81 3c c3 7e e7`.
 
 The capture shows steps to 4, 5, 6 and 7, all passing, with the first
 packet straight after. With `/BAUD:9600` on both sides there is no speed
-change at all. The relay carries bytes whatever the emulated UART speed is,
-so the capture cannot show the moment each side switches, or what happens
-when the test pattern fails. The index table and the pattern agree with
-`ruby-interlnk`.
+change at all. The index table and the pattern agree with `ruby-interlnk`.
+
+The emulator relay carries bytes whatever the UART speed is, so the
+captures cannot show when each side switches. INTERLNK's code shows the
+client's side of each step:
+
+1. At the old speed, send `ff` and wait for `00`.
+2. Send `k`, wait until it has left the UART (line status `60`, discarding
+   anything received meanwhile), and switch to the new speed straight
+   away, without waiting for a reply.
+3. At the new speed, wait for `k << 4`, skipping any other byte; then send
+   `k << 4` and each test byte in turn, each time skipping bytes until the
+   expected reply arrives.
+4. One timer of 10 ticks (about 0.55 s) covers all of step 3. If it runs
+   out, the client goes back to the old speed, makes that its highest
+   speed for the session, and goes on as if the change had worked: no
+   error, and its next packet comes at the old speed.
+
+So the server switches as soon as it has the index, and sends `k << 4` at
+the new speed. A server that does not want the new speed just stays silent
+and the client falls back. On real hardware, Interloper's first version
+sent `k << 4` at the old speed: the client never saw it, waited 0.55 s, and
+fell back to 9600.
 
 ### Packet transfer
 
@@ -421,8 +447,11 @@ register on the server.
   restarts or loses the server just starts again. Remembering the last
   client ID is optional, as INTERLNK accepts anything there.
 - With no `/BAUD` limit, the client changes speed right after the handshake.
-  The server has to follow the speed change and must handle echo-mode
-  packets, which the client switches to after any lost packet.
+  The server has to follow the speed change, switching as soon as it reads
+  the speed index, and must handle echo-mode packets, which the client
+  switches to after any lost packet. If a step fails, the server must be
+  back at the old speed within about 0.5 s, when the client sends its next
+  packet there.
 - DRIVE-INFO needs a size string and a label for each drive.
 - INIT's drive count and attribute table must cover every unit served, or
   INTERLNK never uses the higher units.
@@ -439,9 +468,8 @@ register on the server.
 
 - Whether `06` is a write with verify, as DOS has separate device commands
   for the two. Only `05` has been seen.
-- Speed change: when each side switches its UART, and what the client does
-  when the test pattern fails at some speed. This needs real serial ports
-  or an emulated link that enforces the line speed.
+- Speed change: how INTERSVR times its own switch. Only the client's side
+  has been read, and only Interloper has been tried on real hardware.
 - Whether echo mode is ever switched off again within a session.
 - The 6 bytes after the BPB in BUILD-BPB replies.
 - The 2-byte `00 00` packet before the SERVER-INFO request: is it a command
