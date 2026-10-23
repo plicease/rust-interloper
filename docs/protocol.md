@@ -73,6 +73,17 @@ the client simply starts again with the handshake, SERVER-INFO and INIT:
   and INIT. The client's DOS saw no error. The client then repeated
   MEDIA-CHECK and BUILD-BPB before reading again.
 
+A client that restarts after a speed change sends its handshake at 9600
+while the server is still at the faster speed, so the server has to notice
+and go back to 9600. These captures do not show how INTERSVR does it.
+Interloper goes back on any byte that arrived with a line error, or that
+cannot start anything in the protocol. The line errors matter at 115200: a
+9600 bit lasts as long as 12 bits at 115200, so each low bit of `aa`
+arrives as a byte of `00` with a framing error. Without the error, `00`
+looks like the flags of a packet. On Phaistos, `aa` arrived as four such
+bytes (`captures/hardware/phaistos-115200.log`). At the slower speeds the
+same bytes arrive as other values, such as `98 e6`, which cannot be flags.
+
 ### Speed change
 
 The handshake runs at 9600 baud. If both sides allow a higher speed, the

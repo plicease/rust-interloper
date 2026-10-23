@@ -219,8 +219,16 @@ impl<T: Transport> Link<T> {
     /// Waits indefinitely.
     pub fn wait(&mut self) -> Result<Incoming> {
         loop {
-            let b = match self.t.read_byte(Duration::from_secs(3600))? {
-                Some(b) => b,
+            let b = match self.t.read_byte_checked(Duration::from_secs(3600))? {
+                Some((_, true)) => {
+                    // A byte sent at another speed: most likely a client
+                    // restarting at the base speed while we still run
+                    // faster. At 115200 each byte of its handshake arrives
+                    // as several 00 bytes, which could pass for flags.
+                    self.back_to_base()?;
+                    continue;
+                }
+                Some((b, false)) => b,
                 None => continue,
             };
             if b == HELLO[0].0 {
@@ -246,21 +254,23 @@ impl<T: Transport> Link<T> {
             // Noise, perhaps a client restarting at the base speed while we
             // still run faster. Go back to the base speed (a guess: when
             // INTERSVR does this is not known).
-            if self.baud != self.base_baud {
-                self.baud = self.base_baud;
-                self.t.set_baud(self.baud)?;
-            }
+            self.back_to_base()?;
         }
+    }
+
+    /// Go back to the base speed, where INTERLNK always starts.
+    fn back_to_base(&mut self) -> Result<()> {
+        if self.baud != self.base_baud {
+            self.baud = self.base_baud;
+            self.t.set_baud(self.baud)?;
+        }
+        Ok(())
     }
 
     /// The rest of a handshake after `aa`. A lone `aa` (INTERLNK's probe
     /// at load) is answered too; false if the rest does not follow.
     fn server_hello(&mut self) -> Result<bool> {
-        if self.baud != self.base_baud {
-            // INTERLNK always starts at the base speed.
-            self.baud = self.base_baud;
-            self.t.set_baud(self.baud)?;
-        }
+        self.back_to_base()?;
         self.t.write_all(&[HELLO[0].1])?;
         for &(want, reply) in &HELLO[1..] {
             match self.t.read_byte(self.timeouts.reply)? {
@@ -679,12 +689,17 @@ mod tests {
     /// Plays scripted input, and records what the link writes and when it
     /// changes speed, which a socket cannot show.
     struct Script {
-        input: std::collections::VecDeque<u8>,
+        /// Each byte, and whether it arrives with a line error.
+        input: std::collections::VecDeque<(u8, bool)>,
         log: Vec<String>,
     }
 
     impl Transport for Script {
-        fn read_byte(&mut self, _timeout: Duration) -> io::Result<Option<u8>> {
+        fn read_byte(&mut self, timeout: Duration) -> io::Result<Option<u8>> {
+            Ok(self.read_byte_checked(timeout)?.map(|(b, _)| b))
+        }
+
+        fn read_byte_checked(&mut self, _timeout: Duration) -> io::Result<Option<(u8, bool)>> {
             Ok(self.input.pop_front())
         }
 
@@ -702,11 +717,29 @@ mod tests {
     /// A server link that has just read `ff`, with the client's bytes to
     /// come.
     fn speed_change_from(input: &[u8]) -> Link<Script> {
+        scripted(input.iter().map(|&b| (b, false)))
+    }
+
+    fn scripted(input: impl IntoIterator<Item = (u8, bool)>) -> Link<Script> {
         let script = Script {
-            input: input.iter().copied().collect(),
+            input: input.into_iter().collect(),
             log: Vec::new(),
         };
         Link::new(script, 9600, 115200)
+    }
+
+    #[test]
+    fn line_error_goes_back_to_the_base_speed() {
+        // A client rebooted while we ran at 115200, as seen on Phaistos:
+        // its `aa` at 9600 arrives as four 00 bytes with framing errors.
+        // 00 could be flags, so only the errors tell what happened.
+        let mut input = vec![(0x00, true); 4];
+        input.extend(HELLO.iter().map(|&(c, _)| (c, false)));
+        let mut s = scripted(input);
+        s.baud = 115200;
+        assert_eq!(s.wait().unwrap(), Incoming::Connected);
+        assert_eq!(s.t.log, ["baud 9600", "00", "ff", "11"]);
+        assert_eq!(s.baud(), 9600);
     }
 
     #[test]

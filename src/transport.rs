@@ -20,6 +20,13 @@ pub trait Transport {
     /// timeout passed.
     fn read_byte(&mut self, timeout: Duration) -> io::Result<Option<u8>>;
 
+    /// Read one byte like [`Transport::read_byte`], and whether it arrived
+    /// with a line error: a framing or parity error, or a break. Only a
+    /// serial port can tell; other transports never report one.
+    fn read_byte_checked(&mut self, timeout: Duration) -> io::Result<Option<(u8, bool)>> {
+        Ok(self.read_byte(timeout)?.map(|b| (b, false)))
+    }
+
     /// Write all of `data`.
     fn write_all(&mut self, data: &[u8]) -> io::Result<()>;
 
@@ -69,11 +76,19 @@ impl<T: Transport, W: Write> Trace<T, W> {
 
 impl<T: Transport, W: Write> Transport for Trace<T, W> {
     fn read_byte(&mut self, timeout: Duration) -> io::Result<Option<u8>> {
-        let b = self.inner.read_byte(timeout)?;
-        if let Some(b) = b {
+        Ok(self.read_byte_checked(timeout)?.map(|(b, _)| b))
+    }
+
+    fn read_byte_checked(&mut self, timeout: Duration) -> io::Result<Option<(u8, bool)>> {
+        let read = self.inner.read_byte_checked(timeout)?;
+        if let Some((b, line_error)) = read {
             self.log("C>S", &[b])?;
+            if line_error {
+                let at = self.start.elapsed().as_secs_f64();
+                writeln!(self.out, "{at:12.6} MARK HOST line error")?;
+            }
         }
-        Ok(b)
+        Ok(read)
     }
 
     fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
@@ -186,8 +201,10 @@ impl PortLink {
 
 impl Serial {
     /// Open a tty (such as `/dev/ttyS0`, or the `com1.pty` link 86Box
-    /// creates) in raw 8N1 mode at `baud`.
+    /// creates) in raw 8N1 mode at `baud`, marking bytes received with line
+    /// errors (`PARMRK`).
     pub fn open(path: &Path, baud: u32) -> io::Result<Serial> {
+        use termios::InputFlags;
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -197,7 +214,10 @@ impl Serial {
         termios::cfmakeraw(&mut tio);
         tio.control_flags |= termios::ControlFlags::CLOCAL | termios::ControlFlags::CREAD;
         tio.control_flags &= !termios::ControlFlags::CRTSCTS;
-        tio.input_flags &= !(termios::InputFlags::IXON | termios::InputFlags::IXOFF);
+        tio.input_flags &= !(InputFlags::IXON | InputFlags::IXOFF | InputFlags::IGNPAR);
+        // Without INPCK, Linux serial drivers pass framing errors through as
+        // ordinary bytes.
+        tio.input_flags |= InputFlags::INPCK | InputFlags::PARMRK;
         let speed = baud_rate(baud)?;
         termios::cfsetispeed(&mut tio, speed)?;
         termios::cfsetospeed(&mut tio, speed)?;
@@ -211,7 +231,11 @@ impl Serial {
 
 impl Transport for Serial {
     fn read_byte(&mut self, timeout: Duration) -> io::Result<Option<u8>> {
-        self.inner.read_byte(timeout)
+        Ok(self.read_byte_checked(timeout)?.map(|(b, _)| b))
+    }
+
+    fn read_byte_checked(&mut self, timeout: Duration) -> io::Result<Option<(u8, bool)>> {
+        read_marked(&mut self.inner, timeout)
     }
 
     fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
@@ -230,6 +254,25 @@ impl Transport for Serial {
         termios::cfsetispeed(&mut tio, speed)?;
         termios::cfsetospeed(&mut tio, speed)?;
         Ok(termios::tcsetattr(file, SetArg::TCSANOW, &tio)?)
+    }
+}
+
+/// How long to wait for the rest of a `PARMRK` mark. The tty queues a
+/// mark in one piece, so it is there at once.
+const MARK_TIME: Duration = Duration::from_millis(100);
+
+/// Read a byte from a tty with `PARMRK` set. The tty sends a byte received
+/// with a line error as `ff 00 b` (a break as `ff 00 00`), and a received
+/// `ff` as `ff ff`.
+fn read_marked<T: Transport>(t: &mut T, timeout: Duration) -> io::Result<Option<(u8, bool)>> {
+    let bad_mark = || io::Error::new(io::ErrorKind::InvalidData, "bad PARMRK mark");
+    match t.read_byte(timeout)? {
+        Some(0xFF) => match t.read_byte(MARK_TIME)? {
+            Some(0xFF) => Ok(Some((0xFF, false))),
+            Some(0x00) => Ok(Some((t.read_byte(MARK_TIME)?.ok_or_else(bad_mark)?, true))),
+            _ => Err(bad_mark()),
+        },
+        b => Ok(b.map(|b| (b, false))),
     }
 }
 
@@ -278,6 +321,51 @@ mod tests {
         let mut b = FdTransport::new(b);
         let err = b.read_byte(Duration::from_millis(200)).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn line_error_marks() {
+        let (a, b) = UnixStream::pair().unwrap();
+        let (mut a, mut b) = (FdTransport::new(a), FdTransport::new(b));
+        a.write_all(&[0x41, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0x00, 0x98, 0x00])
+            .unwrap();
+        let t = Duration::from_millis(200);
+        for want in [
+            (0x41, false),
+            (0xFF, false),
+            (0x00, true),
+            (0x98, true),
+            (0x00, false),
+        ] {
+            assert_eq!(read_marked(&mut b, t).unwrap(), Some(want));
+        }
+        assert_eq!(
+            read_marked(&mut b, Duration::from_millis(20)).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn trace_marks_line_errors() {
+        struct Errors(Vec<u8>);
+        impl Transport for Errors {
+            fn read_byte(&mut self, _timeout: Duration) -> io::Result<Option<u8>> {
+                Ok(self.0.pop())
+            }
+            fn read_byte_checked(&mut self, t: Duration) -> io::Result<Option<(u8, bool)>> {
+                Ok(self.read_byte(t)?.map(|b| (b, true)))
+            }
+            fn write_all(&mut self, _data: &[u8]) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut out = Vec::new();
+        let mut trace = Trace::new(Errors(vec![0x00]), &mut out);
+        assert_eq!(trace.read_byte(Duration::ZERO).unwrap(), Some(0x00));
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = text.lines().map(|l| l.trim_start()).collect();
+        assert!(lines[0].ends_with(" C>S    1 00"), "{lines:?}");
+        assert!(lines[1].ends_with(" MARK HOST line error"), "{lines:?}");
     }
 
     #[test]

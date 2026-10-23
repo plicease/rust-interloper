@@ -121,6 +121,7 @@ Keep the traces and `.stderr` files.
 | 2026-10-23 | Phaistos | 38400 | Pass |
 | 2026-10-23 | Phaistos | 57600 | Pass |
 | 2026-10-23 | Phaistos | 115200 | Pass, except the client restart |
+| 2026-10-23 | Phaistos, with line errors detected | 115200 | Pass, including the client restart |
 
 At 9600 on Phaistos every test above passed: DIR, COPY with
 `MD5SUM -c` reporting every file `OK`, four writes refused with the image
@@ -148,3 +149,10 @@ went back to 9600, and DOS could not reconnect until Interloper was
 restarted. At the slower speeds the same handshake arrived as bytes that
 cannot be flags, which Interloper treats as noise and so goes back to 9600.
 That worked there, but only by luck.
+
+Interloper now asks the serial driver to mark bytes received with a framing
+error, and goes back to 9600 on the first one. On a second run at 115200,
+the rebooted client's handshake arrived as four marked `00` bytes.
+Interloper went back to 9600, and the client reconnected and stepped up to
+115200 again. That run lost no packets and every READ matched. The trace
+is `emu/dos622/captures/hardware/phaistos-reboot-115200.log`.
