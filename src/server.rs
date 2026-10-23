@@ -58,6 +58,11 @@ impl Server {
         self.drives.get(i).map(|d| d.as_ref())
     }
 
+    fn drive_mut(&mut self, unit: u8) -> Option<&mut (dyn BlockDevice + 'static)> {
+        let i = usize::from(unit.checked_sub(FIRST_UNIT)?);
+        self.drives.get_mut(i).map(|d| d.as_mut())
+    }
+
     /// The reply to a request, or `None` for a command whose reply format
     /// is not known.
     pub fn handle(&mut self, request: &Request) -> Option<Reply> {
@@ -147,10 +152,7 @@ impl Server {
                 }
             }
             Request::Write(s, data) => {
-                let result = match self
-                    .drives
-                    .get_mut(usize::from(s.unit.wrapping_sub(FIRST_UNIT)))
-                {
+                let result = match self.drive_mut(s.unit) {
                     Some(d) => d.write_sectors(s.start, data),
                     None => Err(DeviceError::UnknownUnit),
                 };
@@ -517,6 +519,17 @@ mod tests {
             s.handle(&Request::Write(sectors, vec![0; SECTOR])),
             Some(Reply::Write {
                 status: Status(0x8100),
+                count: 0
+            })
+        );
+        // Below the first unit, as well as past the last.
+        assert_eq!(
+            s.handle(&Request::Write(
+                Sectors { unit: 1, ..sectors },
+                vec![0; SECTOR]
+            )),
+            Some(Reply::Write {
+                status: Status::error(DeviceError::UnknownUnit),
                 count: 0
             })
         );
