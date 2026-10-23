@@ -1,14 +1,14 @@
 use std::fs::File;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 use interloper::image::{BlockDevice, ImageDevice};
-use interloper::link::{BAUD, Link};
+use interloper::link::BAUD;
 use interloper::server::{Log, Server};
-use interloper::transport::{Serial, Trace};
 
 /// INTERLNK server for Linux: serves FAT disk images to MS-DOS INTERLNK.
 #[derive(Parser)]
@@ -22,7 +22,9 @@ struct Cli {
 enum Command {
     /// Serve images read-only over a serial port.
     Serve {
-        /// Serial port or pseudo-terminal, such as /dev/ttyS0.
+        /// Serial port or pseudo-terminal, such as /dev/ttyS0. If it fails
+        /// (an emulator closing its pty), it is reopened when it can be; a
+        /// symbolic link once it has been replaced.
         #[arg(long)]
         port: PathBuf,
         /// FAT12 or FAT16 image: a bare volume, or a whole disk whose first
@@ -81,23 +83,32 @@ fn serve(
         );
         drives.push(Box::new(image));
     }
-    let serial =
-        Serial::open(&port, 9600).with_context(|| format!("opening {}", port.display()))?;
-    let trace: Box<dyn Write> = match trace {
+    let trace = match trace {
         Some(path) => {
-            Box::new(File::create(&path).with_context(|| format!("creating {}", path.display()))?)
+            Some(File::create(&path).with_context(|| format!("creating {}", path.display()))?)
         }
-        None => Box::new(std::io::sink()),
+        None => None,
     };
-    let mut link = Link::new(Trace::new(serial, trace), 9600, baud);
+    // Each connection writes to the same trace file.
+    let mut trace = || -> io::Result<Box<dyn Write>> {
+        Ok(match &trace {
+            Some(file) => Box::new(file.try_clone()?),
+            None => Box::new(io::sink()),
+        })
+    };
     let mut server = Server::new(drives);
-    eprintln!("serving on {}", port.display());
     let mut log = |kind: Log, line: &str| {
         if verbose || kind != Log::Request {
             eprintln!("{line}");
         }
     };
     server
-        .serve(&mut link, &mut log)
-        .with_context(|| format!("serving {}", port.display()))
+        .serve_port(
+            &port,
+            baud,
+            Duration::from_millis(200),
+            &mut trace,
+            &mut log,
+        )
+        .with_context(|| format!("opening {}", port.display()))
 }

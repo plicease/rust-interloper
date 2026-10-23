@@ -3,7 +3,9 @@
 //! Drives are given server unit numbers from 2 up, so INTERLNK's drive table
 //! shows the first as "C:", as for an INTERSVR sharing a hard disk.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::io::{self, Write};
+use std::path::Path;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::image::BlockDevice;
 use crate::link::{self, Incoming, Link};
@@ -11,7 +13,7 @@ use crate::proto::{
     DeviceError, InitReply, MediaChange, Reply, Request, SECTOR, ServerInfoReply, Status, padded,
     request_blocks,
 };
-use crate::transport::Transport;
+use crate::transport::{PortLink, Serial, Trace, Transport};
 
 /// INTERSVR's version, which INTERLNK 1.00 is known to accept.
 pub const VERSION: (u8, u8) = (1, 10);
@@ -206,6 +208,48 @@ impl Server {
             },
             Request::Unknown { .. } => return None,
         })
+    }
+
+    /// Serve the serial port at `port` indefinitely. When the port fails
+    /// (a pseudo-terminal whose emulator exited, an unplugged adapter), wait
+    /// until it can be opened again, then serve it afresh; a symbolic link
+    /// is only reopened once it has been replaced. Fails only if the first
+    /// open fails. `trace` gives the trace output for each opening.
+    pub fn serve_port<W: Write>(
+        &mut self,
+        port: &Path,
+        max_baud: u32,
+        retry: Duration,
+        trace: &mut dyn FnMut() -> io::Result<W>,
+        log: &mut dyn FnMut(Log, &str),
+    ) -> io::Result<()> {
+        let start = Instant::now();
+        let mut dead: Option<PortLink> = None;
+        loop {
+            let link_id = PortLink::of(port);
+            let serial = match &dead {
+                Some(d) if !d.replaced(port) => None,
+                _ => match Serial::open(port, 9600) {
+                    Ok(s) => Some(s),
+                    Err(e) if dead.is_none() => return Err(e),
+                    Err(_) => None,
+                },
+            };
+            let Some(serial) = serial else {
+                std::thread::sleep(retry);
+                continue;
+            };
+            log(Log::Session, &format!("serving on {}", port.display()));
+            let transport = Trace::with_start(serial, trace()?, start);
+            let mut link = Link::new(transport, 9600, max_baud);
+            if let Err(e) = self.serve(&mut link, log) {
+                log(
+                    Log::Session,
+                    &format!("{}: {e}; waiting to reopen it", port.display()),
+                );
+            }
+            dead = Some(link_id);
+        }
     }
 
     /// Serve a link until its transport fails, reporting to `log`.
@@ -520,6 +564,88 @@ mod tests {
         assert_eq!(replies[0], [0x00, 0x01, 20, 0]);
         assert_eq!(replies[1].len(), 20 * SECTOR);
         assert_eq!(replies[1][19 * SECTOR], 59);
+        paths
+            .into_iter()
+            .for_each(|p| std::fs::remove_file(p).unwrap());
+    }
+
+    #[test]
+    fn reopens_a_replaced_port() {
+        // A pty behind a symbolic link, as 86Box makes one: when the
+        // emulator exits and a new one replaces the link, the server serves
+        // the new pty and remembers the previous client.
+        use nix::pty::openpty;
+        use std::fs::File;
+        use std::os::fd::AsRawFd;
+        use std::sync::mpsc;
+
+        let dir = std::env::temp_dir().join(format!("interloper-port-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let port = dir.join("com1.pty");
+        let new_pty = || {
+            let pty = openpty(None, None).unwrap();
+            let slave =
+                std::fs::read_link(format!("/proc/self/fd/{}", pty.slave.as_raw_fd())).unwrap();
+            let tmp = dir.join("com1.new");
+            std::os::unix::fs::symlink(slave, &tmp).unwrap();
+            std::fs::rename(&tmp, &port).unwrap();
+            File::from(pty.master)
+        };
+        let master = new_pty();
+
+        let (mut s, paths) = server();
+        let (tx, rx) = mpsc::channel();
+        let serve_at = port.clone();
+        thread::spawn(move || {
+            s.serve_port(
+                &serve_at,
+                9600,
+                Duration::from_millis(20),
+                &mut || Ok(io::sink()),
+                &mut |_, line| tx.send(line.to_string()).unwrap(),
+            )
+        });
+        let t = Duration::from_secs(2);
+        let opened = |rx: &mpsc::Receiver<String>| loop {
+            if rx.recv_timeout(t).unwrap().starts_with("serving on") {
+                break;
+            }
+        };
+        // Connect as client `id`, returning the server's last client ID.
+        let connect = |master: File, id: u32| {
+            let mut c = FdTransport::new(master);
+            for (send, want) in link::HELLO {
+                c.write_all(&[send]).unwrap();
+                assert_eq!(c.read_byte(t).unwrap(), Some(want));
+            }
+            let mut client = Link::new(c, 9600, 9600);
+            let mut info = vec![0u8; 34];
+            info[6..8].copy_from_slice(&[0, 1]);
+            info[26..30].copy_from_slice(&id.to_le_bytes());
+            client.send_block(&[0, 0]).unwrap();
+            client.send_block(&info).unwrap();
+            client.send_turnaround().unwrap();
+            let reply = client.recv_block().unwrap();
+            client.recv_turnaround().unwrap();
+            u32::from_le_bytes(reply[25..29].try_into().unwrap())
+        };
+
+        opened(&rx);
+        assert_eq!(connect(master, 0xB010FFD9), 0);
+        // connect() dropped the master: the server loses the port, and
+        // must wait for the link to be replaced.
+        loop {
+            if rx.recv_timeout(t).unwrap().contains("waiting to reopen") {
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
+        assert!(rx.try_recv().is_err());
+        let master = new_pty();
+        opened(&rx);
+        assert_eq!(connect(master, 0x1814B9DD), 0xB010FFD9);
+
+        std::fs::remove_dir_all(&dir).unwrap();
         paths
             .into_iter()
             .for_each(|p| std::fs::remove_file(p).unwrap());

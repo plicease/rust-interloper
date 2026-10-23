@@ -22,6 +22,10 @@ interloper serve --port /dev/ttyS0 --image share.img
 - `--baud` is the highest line speed to accept (default 9600). Every
   connection starts at 9600; an INTERLNK loaded without `/BAUD` then steps
   up to the highest speed both sides allow.
+- If the port fails, as a pseudo-terminal does when its emulator exits,
+  Interloper keeps running and reopens it when it can: a symbolic link
+  (such as 86Box's `com1.pty`) once it has been replaced, any other path as
+  soon as it opens. A restarted INTERLNK then reconnects.
 - `--trace FILE` records every byte, in the format
   `emu/dos622/decode.py` decodes.
 - `--verbose` logs each request.

@@ -7,7 +7,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use nix::fcntl::OFlag;
@@ -45,11 +45,13 @@ pub struct Trace<T, W> {
 
 impl<T: Transport, W: Write> Trace<T, W> {
     pub fn new(inner: T, out: W) -> Self {
-        Trace {
-            inner,
-            out,
-            start: Instant::now(),
-        }
+        Self::with_start(inner, out, Instant::now())
+    }
+
+    /// Log times relative to `start`, so traces of successive connections
+    /// share one clock.
+    pub fn with_start(inner: T, out: W, start: Instant) -> Self {
+        Trace { inner, out, start }
     }
 
     fn log(&mut self, direction: &str, data: &[u8]) -> io::Result<()> {
@@ -153,6 +155,33 @@ impl<S: AsFd + Read + Write> Transport for FdTransport<S> {
 /// A serial port or pseudo-terminal in raw mode.
 pub struct Serial {
     inner: FdTransport<File>,
+}
+
+/// Identifies which port a path led to: for a symbolic link (such as the
+/// `com1.pty` link 86Box replaces each time it starts) the link itself, so
+/// a replaced link differs even if it points at a reused pty number. `None`
+/// for any other path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortLink(Option<(u64, i64, i64, PathBuf)>);
+
+impl PortLink {
+    pub fn of(path: &Path) -> PortLink {
+        use std::os::unix::fs::MetadataExt;
+        let link = std::fs::symlink_metadata(path)
+            .ok()
+            .filter(|m| m.file_type().is_symlink())
+            .and_then(|m| {
+                let target = std::fs::read_link(path).ok()?;
+                Some((m.ino(), m.ctime(), m.ctime_nsec(), target))
+            });
+        PortLink(link)
+    }
+
+    /// True if `path` may be reopened after the port opened through this
+    /// link failed: a symbolic link must have been replaced.
+    pub fn replaced(&self, path: &Path) -> bool {
+        self.0.is_none() || PortLink::of(path) != *self
+    }
 }
 
 impl Serial {

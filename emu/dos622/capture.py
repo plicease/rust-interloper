@@ -21,7 +21,8 @@ run headless.
 With --interloper BINARY, Interloper replaces the server VM: it serves the
 server's C: (dos622.img) and B: (fixture.img) as units 2 and 3 on the
 client's COM1, and the log is its --trace output with the client's markers
-merged in. Restart markers are not supported in this mode.
+merged in. HOST-RESTART-SERVER restarts Interloper; after
+HOST-RESTART-CLIENT, Interloper reopens the new VM's pty by itself.
 """
 
 import argparse
@@ -95,17 +96,37 @@ def stop_vm(proc):
         proc.wait()
 
 
-def run_interloper(binary, vms, log):
-    """Serve the client from Interloper until CAPTURE-DONE; write the merged log."""
+def run_interloper(binary, vms, log, restart_client):
+    """Serve the client from Interloper until CAPTURE-DONE; write the merged log.
+
+    HOST-RESTART-CLIENT calls restart_client(); Interloper reopens the new
+    pty by itself. HOST-RESTART-SERVER restarts Interloper, which traces to
+    a new file whose times are shifted onto the first one's clock.
+    """
     server = vms["server"]
-    trace = log.with_name(log.name + ".trace")
     stderr = open(log.with_name(log.name + ".stderr"), "w")
     cmd = [str(binary), "serve", "--port", str(vms["client"] / "com1.pty"),
            "--image", str(server / "dos622.img"), "--image", str(server / "fixture.img"),
-           "--trace", str(trace), "--verbose"]
-    proc = subprocess.Popen(cmd, stdout=stderr, stderr=stderr)
+           "--verbose"]
     start = time.monotonic()
-    marks, pending = [], b""
+    traces = []     # (trace file, start offset)
+    lines = []
+
+    def launch():
+        trace = log.with_name(f"{log.name}.trace.{len(traces)}")
+        traces.append((trace, time.monotonic() - start))
+        return subprocess.Popen(cmd + ["--trace", str(trace)], stdout=stderr, stderr=stderr)
+
+    def note(text):
+        lines.append(f"{time.monotonic() - start:12.6f} MARK HOST {text}")
+        print(lines[-1], flush=True)
+
+    def stop(proc):
+        proc.terminate()
+        proc.wait()
+
+    proc = launch()
+    pending = b""
     fd = sniff.open_pty(vms["client"] / "com2.pty")
     try:
         while True:
@@ -120,19 +141,33 @@ def run_interloper(binary, vms, log):
                 text = raw.decode("ascii", "replace").strip()
                 if not text:
                     continue
-                if text.startswith("HOST-"):
-                    raise ValueError(f"{text} is not supported with --interloper")
-                marks.append(f"{time.monotonic() - start:12.6f} MARK {text}")
-                print(marks[-1], flush=True)
+                lines.append(f"{time.monotonic() - start:12.6f} MARK {text}")
+                print(lines[-1], flush=True)
                 if text == "CAPTURE-DONE":
                     return
+                if text == "HOST-RESTART-SERVER":
+                    stop(proc)
+                    note("server stopped")
+                    proc = launch()
+                    note("server started")
+                elif text == "HOST-RESTART-CLIENT":
+                    os.close(fd)
+                    fd = None
+                    restart_client(note)
+                    fd = sniff.open_pty(vms["client"] / "com2.pty")
+                    pending = b""
+                elif text.startswith("HOST-"):
+                    raise ValueError(f"unknown marker {text}")
     finally:
-        os.close(fd)
-        proc.terminate()
-        proc.wait()
-        lines = trace.read_text().splitlines() if trace.exists() else []
-        merged = sorted(lines + marks, key=lambda line: float(line.split()[0]))
-        log.write_text("".join(line + "\n" for line in merged))
+        if fd is not None:
+            os.close(fd)
+        stop(proc)
+        for trace, offset in traces:
+            for line in trace.read_text().splitlines() if trace.exists() else []:
+                t, rest = line.split(None, 1)
+                lines.append(f"{float(t) + offset:12.6f} {rest}")
+        lines.sort(key=lambda line: float(line.split()[0]))
+        log.write_text("".join(line + "\n" for line in lines))
 
 
 def main():
@@ -192,7 +227,8 @@ def main():
     try:
         if args.interloper:
             start("client")
-            run_interloper(args.interloper.resolve(), vms, args.log)
+            run_interloper(args.interloper.resolve(), vms, args.log,
+                           lambda note: on_mark("HOST-RESTART-CLIENT", note))
             return
         start("server")
         start("client")
