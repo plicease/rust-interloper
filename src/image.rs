@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
 
+use crate::fat::Layout;
 use crate::proto::{DeviceError, SECTOR};
 
 /// What INTERLNK needs to know about a volume, taken from its boot sector
@@ -155,58 +156,12 @@ impl BlockDevice for ImageDevice {
     }
 }
 
-fn u16_at(d: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([d[o], d[o + 1]])
-}
-
 fn u32_at(d: &[u8], o: usize) -> u32 {
     u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
 }
 
-/// The layout facts a FAT12/16 boot sector gives.
-#[derive(Debug)]
-struct Bpb {
-    sectors: u32,
-    root_start: u32,
-    root_sectors: u32,
-    fat16: bool,
-}
-
-fn parse_bpb(b: &[u8; SECTOR]) -> Result<Bpb> {
-    let bps = u16_at(b, 11);
-    let spc = b[13];
-    let reserved = u16_at(b, 14);
-    let fats = b[16];
-    let root_entries = u16_at(b, 17);
-    let media = b[21];
-    let fat_sectors = u16_at(b, 22);
-    let sectors = match u16_at(b, 19) {
-        0 => u32_at(b, 32),
-        n => u32::from(n),
-    };
-    ensure!(
-        bps as usize == SECTOR,
-        "{bps} bytes per sector, only 512 is supported"
-    );
-    ensure!(spc.is_power_of_two(), "{spc} sectors per cluster");
-    ensure!(reserved >= 1, "no reserved sectors");
-    ensure!((1..=2).contains(&fats), "{fats} FATs");
-    ensure!(media >= 0xF0, "media descriptor {media:#04x}");
-    if fat_sectors == 0 || root_entries == 0 {
-        bail!("FAT32 is not supported");
-    }
-    let root_sectors = (u32::from(root_entries) * 32).div_ceil(SECTOR as u32);
-    let root_start = u32::from(reserved) + u32::from(fats) * u32::from(fat_sectors);
-    let data_start = root_start + root_sectors;
-    ensure!(sectors > data_start, "{sectors} sectors is too small");
-    let clusters = (sectors - data_start) / u32::from(spc);
-    ensure!(clusters < 65525, "{clusters} clusters is FAT32");
-    Ok(Bpb {
-        sectors,
-        root_start,
-        root_sectors,
-        fat16: clusters >= 4085,
-    })
+fn parse_bpb(b: &[u8; SECTOR]) -> Result<Layout> {
+    Layout::from_bpb(b[11..36].try_into().unwrap())
 }
 
 /// Start sector of the first FAT12/16 partition in an MBR.

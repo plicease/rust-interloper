@@ -33,6 +33,27 @@ interloper serve --port /dev/ttyS0 --image share.img
 On the DOS side, load the driver from `CONFIG.SYS`, for example
 `DEVICE=C:\DOS\INTERLNK.EXE /DRIVES:3 /NOPRINTER /COM:1 /BAUD:9600`.
 
+## Making images
+
+```sh
+interloper image create share.img ~/dos-files
+interloper image list share.img
+```
+
+`image create` builds an image of a directory's contents. The image is a
+1.44MB floppy if the files fit, otherwise the smallest FAT12 or FAT16 volume
+that holds them, up to just under 32MB. Names must already be DOS 8.3 names
+(`readme.txt` is stored as `README.TXT`). Nothing is renamed or truncated:
+a name that cannot be stored, two names that differ only in case, a
+symbolic link or a special file is an error, and every problem is listed
+before anything is written. Entries whose names start with `.` are left
+out. Modification times are kept, in local time to the even second. The
+image file must not already exist.
+
+`image list` shows every file and directory in an image that `serve`
+accepts, with sizes and times. `interloper image create --help` gives the
+full rules.
+
 ## Testing against the real INTERLNK
 
 `emu/dos622/` builds MS-DOS 6.22 VMs for 86Box and runs scripted
