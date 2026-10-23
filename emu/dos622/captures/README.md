@@ -66,10 +66,11 @@ matched.
 `hardware/` holds byte traces from `interloper serve --trace` on a Linux
 machine's `/dev/ttyS0`, connected by a null-modem cable to Phaistos (NuXT,
 NEC V20) running MS-DOS 6.22 `INTERLNK.EXE /DRIVES:1 /NOPRINTER /COM:1
-/BAUD:9600`. Interloper served `fixture.img` from `../fixture.py` as unit 2,
-the client's only remote drive. The traces have no `MARK` lines. Both
-decode with no anomalies and no lost packets, and every READ matches the
-image:
+/BAUD:9600` (or the `/BAUD:` given below). Interloper served `fixture.img`
+from `../fixture.py` as unit 2, the client's only remote drive. The traces
+have no `MARK` lines apart from `HOST baud`. None of them loses a packet,
+and every READ matches the image. The 9600 traces decode with no
+anomalies:
 
 ```sh
 emu/dos622/fixture.py /tmp/fx
@@ -80,6 +81,12 @@ emu/dos622/decode.py emu/dos622/captures/hardware/phaistos-9600.log --image 2=/t
 |------|-------|
 | `hardware/phaistos-9600.log` | Connection at boot, `DIR` of the root and of `SUB\DEEP`, `COPY X:\*.* C:\CAP` (BIG.BIN's 127-sector READ streams at the full line rate, about 8.5 s per 8 KB block), four refused WRITEs (`8100`) from `COPY`, `DEL` and `MD` on the remote drive, then a client reboot that reconnects on the open port and runs `DIR` again. |
 | `hardware/phaistos-restart-9600.log` | A new Interloper process after a server restart: the same client reconnects without DRIVE-INFO and runs `DIR`. |
+| `hardware/phaistos-115200.log` | `/BAUD:115200` and `--baud 115200`. The speed steps up from 9600 through 19200, 38400 and 57600 to 115200, each test pattern passing. Then the same session as at 9600, with BIG.BIN at about 0.85 s per 8 KB block. At 255.7 s the client reboots: its 9600 handshake arrives at 115200 as runs of four `00` bytes, which Interloper takes for packet flags, so the client never reconnects (the `unexpected ctl 00` anomalies). |
+| `hardware/phaistos-restart-115200.log` | A server restart at 115200: the client reconnects and steps up to 115200 again. |
+
+The two 115200 traces were served from the image that
+`fixture.py --md5sum` writes, with md5sum16 v0.01's `md5sum.exe`
+(see `docs/hardware-test.md`). Check them against that image.
 
 ## Recording a new capture
 

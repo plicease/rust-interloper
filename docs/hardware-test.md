@@ -107,17 +107,20 @@ for each. For each speed, note:
 
 In the emulator at 115200, the first packet each way is lost and both sides
 then stay in echo mode, at about 2.3 KB/s (see "Lost packets and echo mode"
-in `protocol.md`). Whether a real machine does the same is an open
-question. A V20 with a UART that has no FIFO may well do it too.
+in `protocol.md`). Phaistos does not: it runs at 115200 with no lost
+packets, so this is a limit of 86Box's UART.
 
-Keep the traces and `.stderr` files. They should settle the guessed
-speed-change timing in `protocol.md`.
+Keep the traces and `.stderr` files.
 
 ## Results
 
 | Date | Machine | Speed | Result |
 |------|---------|-------|--------|
 | 2026-10-23 | Phaistos (NuXT, NEC V20), MS-DOS 6.22, served from a Linux `/dev/ttyS0` | 9600 | Pass |
+| 2026-10-23 | Phaistos | 19200 | Pass |
+| 2026-10-23 | Phaistos | 38400 | Pass |
+| 2026-10-23 | Phaistos | 57600 | Pass |
+| 2026-10-23 | Phaistos | 115200 | Pass, except the client restart |
 
 At 9600 on Phaistos every test above passed: DIR, COPY with
 `MD5SUM -c` reporting every file `OK`, four writes refused with the image
@@ -125,3 +128,23 @@ unchanged, a client reboot and a server restart. The traces decode with no
 anomalies and no lost packets, every READ matched the image, and the
 127-sector READ for `BIG.BIN` ran at the full line rate (about 8.5 s per
 8 KB block). The traces are in `emu/dos622/captures/hardware/`.
+
+The faster runs started Interloper with the same `--baud` as `/BAUD:`.
+Each speed step's test pattern passed, no packets were lost, and every
+READ matched the image. Time for each 8 KB block of `BIG.BIN`, against
+the line rate:
+
+| Speed | Per 8 KB block | Line rate |
+|-------|----------------|-----------|
+| 19200 | 4.28 s | 4.27 s |
+| 38400 | 2.20 s | 2.13 s |
+| 57600 | 1.54 s | 1.42 s |
+| 115200 | 0.85 s | 0.71 s |
+
+The client reboot failed at 115200. INTERLNK restarts at 9600, and at
+115200 each byte of its handshake arrives as several `00` bytes with
+framing errors. Interloper took `00` for a packet's flags byte, so it never
+went back to 9600, and DOS could not reconnect until Interloper was
+restarted. At the slower speeds the same handshake arrived as bytes that
+cannot be flags, which Interloper treats as noise and so goes back to 9600.
+That worked there, but only by luck.
