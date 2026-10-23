@@ -1,9 +1,9 @@
 [package]
 name = "interloper"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "INTERLINK for Linux"
-repository = "https://github.com/plicease/interloper"
+repository = "https://github.com/plicease/rust-interloper"
 license = "MIT"
 
 [dependencies]
@@ -13,7 +13,7 @@ nix = { version = "0.31", features = ["term", "poll", "fs"] }
 
 
 [package.metadata.deb]
-maintainer = "Nobody <devnull@wdlabs.com>"
+maintainer = "Graham Ollis <plicease@cpan.org>"
 copyright = "Nobody"
 extended-description = """\
 INTERLINK for Linux"""
