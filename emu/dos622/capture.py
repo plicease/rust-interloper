@@ -21,8 +21,9 @@ run headless.
 With --interloper BINARY, Interloper replaces the server VM: it serves the
 server's C: (dos622.img) and B: (fixture.img) as units 2 and 3 on the
 client's COM1, and the log is its --trace output with the client's markers
-merged in. HOST-RESTART-SERVER restarts Interloper; after
-HOST-RESTART-CLIENT, Interloper reopens the new VM's pty by itself.
+merged in. --interloper-baud sets its --baud. HOST-RESTART-SERVER restarts
+Interloper; after HOST-RESTART-CLIENT, Interloper reopens the new VM's pty
+by itself.
 """
 
 import argparse
@@ -96,7 +97,7 @@ def stop_vm(proc):
         proc.wait()
 
 
-def run_interloper(binary, vms, log, restart_client):
+def run_interloper(binary, baud, vms, log, restart_client):
     """Serve the client from Interloper until CAPTURE-DONE; write the merged log.
 
     HOST-RESTART-CLIENT calls restart_client(); Interloper reopens the new
@@ -107,7 +108,7 @@ def run_interloper(binary, vms, log, restart_client):
     stderr = open(log.with_name(log.name + ".stderr"), "w")
     cmd = [str(binary), "serve", "--port", str(vms["client"] / "com1.pty"),
            "--image", str(server / "dos622.img"), "--image", str(server / "fixture.img"),
-           "--verbose"]
+           "--baud", str(baud), "--verbose"]
     start = time.monotonic()
     traces = []     # (trace file, start offset)
     lines = []
@@ -186,6 +187,8 @@ def main():
                    help="give up after this many seconds (default 900)")
     p.add_argument("--interloper", type=Path, metavar="BINARY",
                    help="serve the client from Interloper instead of the server VM")
+    p.add_argument("--interloper-baud", type=int, default=9600, metavar="BAUD",
+                   help="Interloper's --baud (default 9600)")
     args = p.parse_args()
 
     scenario = Path(args.scenario)
@@ -227,8 +230,8 @@ def main():
     try:
         if args.interloper:
             start("client")
-            run_interloper(args.interloper.resolve(), vms, args.log,
-                           lambda note: on_mark("HOST-RESTART-CLIENT", note))
+            run_interloper(args.interloper.resolve(), args.interloper_baud, vms,
+                           args.log, lambda note: on_mark("HOST-RESTART-CLIENT", note))
             return
         start("server")
         start("client")

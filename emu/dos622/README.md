@@ -116,7 +116,8 @@ emu/dos622/fatimg.py --get /tmp/run-il/dos622-client/dos622.img@63 'CAP\BIG.BIN'
 The log is Interloper's `--trace` (kept as `il.log.trace.0`) with the
 client's markers merged in, and Interloper's own messages are in
 `il.log.stderr`. `fatimg.py --get` copies a file out of the client's disk to
-compare with `FIXTURE.SHA256`.
+compare with `FIXTURE.SHA256`. `--interloper-baud` sets Interloper's
+`--baud` (default 9600); use 115200 with the `baud-default` scenario.
 
 `HOST-RESTART-CLIENT` restarts the client VM as usual; Interloper notices
 its pty closing and reopens `com1.pty` once the new VM has replaced it.
