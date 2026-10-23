@@ -470,11 +470,15 @@ impl<T: Transport> Link<T> {
                 }
             }
             self.t.write_all(&[*last])?;
-        } else {
-            self.t.write_all(frame)?;
+            self.t.drain()?;
+            return Ok(self.t.read_byte(reply)? == Some(f));
         }
+        self.t.write_all(frame)?;
         self.t.drain()?;
-        Ok(self.t.read_byte(reply)? == Some(f))
+        // A pseudo-terminal does not wait for the bytes to reach the peer,
+        // so allow for the frame's time on the line at the current speed.
+        let line_time = Duration::from_secs_f64(frame.len() as f64 * 10.0 / f64::from(self.baud));
+        Ok(self.t.read_byte(reply + line_time)? == Some(f))
     }
 }
 

@@ -260,11 +260,20 @@ Reply (87 bytes):
 |--------|------|------------|---------|
 | 0 | 2 | `01 0a` | server version major, minor (1.10) |
 | 2 | 2 | `16 06` | DOS version minor, major |
-| 4 | 1 | 3 | drive count (echoes the request?) |
+| 4 | 1 | 3 | server drive count: units 0 to 2 (A: to C:) |
 | 5 | 3 | `ff ff ff` | printer map |
 | 8 | 26 | `02 01 fe …` | drive map: entry *i* is the server unit for client drive *i* (D: → server C:, E: → server B:) |
-| 34 | 52 | `08c2` ×3, then 0 | 26 attribute words (see below) |
+| 34 | 52 | `08c2` ×3, then 0 | attribute word for each server unit (see below) |
 | 86 | 1 | 0 | multitasking flag |
+
+The drive count and the attribute table both describe the **server's**
+units. INTERSVR's server had A:, B: and C:, so both say three, which happens
+to equal the client's `/DRIVES:3`. With Interloper serving units 2 and 3,
+INTERLNK sent no request at all to unit 3 while the reply had attribute
+words at indexes 0 to 2 and a count of 3. Moving the attribute words to
+indexes 2 and 3 was not enough on its own; with the count also raised to 4,
+the drive worked. Whether the attribute words matter once the count is
+right has not been tested.
 
 `0x08C2` matches a DOS block device attribute word. Its bits mean
 open/close/removable supported (`0x0800`), IOCTL queries (`0x0080`), generic
@@ -415,6 +424,12 @@ register on the server.
   The server has to follow the speed change and must handle echo-mode
   packets, which the client switches to after any lost packet.
 - DRIVE-INFO needs a size string and a label for each drive.
+- INIT's drive count and attribute table must cover every unit served, or
+  INTERLNK never uses the higher units.
+- A sender must allow for a frame's time on the line before deciding its
+  echo is lost. Resending too early (Interloper did, on a pseudo-terminal
+  where writes return at once) confuses the client, which has already
+  received the frame.
 - A read-only server can refuse every WRITE with status `8100` and count 0,
   after taking the data packets that follow the request. The client then
   shows "Write protect error", exactly as for INTERSVR with a write-protected

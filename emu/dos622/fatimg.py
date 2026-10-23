@@ -2,11 +2,13 @@
 """Write a file into a FAT12/FAT16 volume inside a disk image, in place.
 
     fatimg.py IMAGE[@SECTOR] DOSPATH SRC
+    fatimg.py --get IMAGE[@SECTOR] DOSPATH DEST
 
 The volume starts at SECTOR (default 0; 63 for the first partition of the
 VM disks). DOSPATH is an 8.3 path such as AUTOEXEC.BAT or DOS\\X.BAT whose
 directories must already exist. An existing file is replaced and its old
-clusters freed. Long file names are not supported.
+clusters freed. With --get, the file is copied out of the image instead.
+Long file names are not supported.
 """
 
 import argparse
@@ -87,7 +89,8 @@ class Volume:
                 return pos, free
         return None, free
 
-    def put(self, path, data):
+    def walk(self, path):
+        """Return (directory's first cluster, 8.3 name) for a DOS path."""
         parts = [short_name(p) for p in path.replace("/", "\\").split("\\") if p]
         first = 0
         for part in parts[:-1]:
@@ -95,6 +98,21 @@ class Volume:
             if pos is None or not self.read(pos + 11, 1)[0] & 0x10:
                 raise FileNotFoundError(f"no directory {path}")
             first = struct.unpack("<H", self.read(pos + 26, 2))[0]
+        return first, parts[-1]
+
+    def read_file(self, path):
+        first, name = self.walk(path)
+        pos, _ = self.lookup(first, name)
+        if pos is None:
+            raise FileNotFoundError(f"no file {path}")
+        start, size = struct.unpack("<HI", self.read(pos + 26, 6))
+        data = b"".join(self.read(self.cluster_pos(n), self.cluster_bytes)
+                        for n in self.chain(start))
+        return data[:size]
+
+    def put(self, path, data):
+        first, name = self.walk(path)
+        parts = [name]
         pos, free = self.lookup(first, parts[-1])
         if pos is None:
             if free is None:
@@ -136,15 +154,24 @@ def put(image, path, data, sector=0):
         Volume(f, sector * 512).put(path, data)
 
 
+def get(image, path, sector=0):
+    with open(image, "rb") as f:
+        return Volume(f, sector * 512).read_file(path)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    p.add_argument("--get", action="store_true", help="copy DOSPATH out to FILE")
     p.add_argument("image", help="disk image, optionally IMAGE@SECTOR")
     p.add_argument("dospath")
-    p.add_argument("src", type=Path)
+    p.add_argument("file", type=Path, help="SRC to write, or DEST with --get")
     args = p.parse_args()
     image, _, sector = args.image.partition("@")
     try:
-        put(image, args.dospath, args.src.read_bytes(), int(sector or 0))
+        if args.get:
+            args.file.write_bytes(get(image, args.dospath, int(sector or 0)))
+        else:
+            put(image, args.dospath, args.file.read_bytes(), int(sector or 0))
     except (OSError, ValueError) as e:
         sys.exit(str(e))
 

@@ -8,6 +8,7 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
 nix = { version = "0.31", features = ["term", "poll", "fs"] }
 
 

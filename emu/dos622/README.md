@@ -97,13 +97,33 @@ relay keeps logging.
 The work directory is kept so READ data can be checked against the server's
 images with `decode.py --image`. Saved captures are in `captures/`.
 
+### Against Interloper
+
+With `--interloper BINARY`, the server VM is not started. Interloper serves
+the server VM's `dos622.img` and `fixture.img` as units 2 and 3 on the
+client's COM1, so the client's D: and E: are the same files as with
+INTERSVR, and the scenarios run unchanged:
+
+```sh
+cargo build
+xvfb-run emu/dos622/capture.py --vms "$VMS" --scenario dir-copy \
+    --work /tmp/run-il --log il.log --interloper target/debug/interloper
+emu/dos622/decode.py il.log --image 2=/tmp/run-il/dos622-server/dos622.img@63 \
+    --image 3=/tmp/run-il/dos622-server/fixture.img
+emu/dos622/fatimg.py --get /tmp/run-il/dos622-client/dos622.img@63 'CAP\BIG.BIN' BIG.BIN
+```
+
+The log is Interloper's `--trace` with the client's markers merged in, and
+Interloper's own messages are in `il.log.stderr`. `fatimg.py --get` copies a
+file out of the client's disk to compare with `FIXTURE.SHA256`. Restart
+markers are not supported in this mode.
+
 ### Decoding
 
 `decode.py` splits a capture into protocol events, and can check READ data
 against the server's images; see `captures/README.md` and
-`docs/protocol.md`. It also reads the byte traces Interloper writes with
-`interloper::transport::Trace` (for example `cargo run --example handshake
--- PORT 9600 TRACE`), where `MARK HOST baud` lines show its speed changes.
+`docs/protocol.md`. It also reads the byte traces of `interloper serve --trace FILE`, where
+`MARK HOST baud` lines show Interloper's speed changes.
 
 ### Interactive session
 
