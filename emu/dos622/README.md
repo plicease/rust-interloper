@@ -101,7 +101,9 @@ images with `decode.py --image`. Saved captures are in `captures/`.
 
 `decode.py` splits a capture into protocol events, and can check READ data
 against the server's images; see `captures/README.md` and
-`docs/protocol.md`.
+`docs/protocol.md`. It also reads the byte traces Interloper writes with
+`interloper::transport::Trace` (for example `cargo run --example handshake
+-- PORT 9600 TRACE`), where `MARK HOST baud` lines show its speed changes.
 
 ### Interactive session
 

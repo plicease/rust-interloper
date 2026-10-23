@@ -160,8 +160,9 @@ one of two things:
 - starts a packet whose flags carry that same sequence number; or
 - if it has nothing to send, **idles**.
 
-Every packet and every turnaround uses the next sequence number (mod 4). The
-captures have no breaks in this.
+Every packet uses the next sequence number (mod 4), whichever side sends
+it. A turnaround carries the number the next packet will use, without using
+it up. The captures have no breaks in this.
 
 A request and its reply look like this, with sequence numbers in brackets:
 

@@ -8,6 +8,7 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1.0.104"
+nix = { version = "0.31", features = ["term", "poll", "fs"] }
 
 
 [package.metadata.deb]
