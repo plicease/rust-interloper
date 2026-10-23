@@ -61,6 +61,26 @@ so they start with INTERLNK's connection handshake, then run:
 The copied files were checked against `FIXTURE.SHA256` after each run and
 matched.
 
+## Real hardware
+
+`hardware/` holds byte traces from `interloper serve --trace` on a Linux
+machine's `/dev/ttyS0`, connected by a null-modem cable to Phaistos (NuXT,
+NEC V20) running MS-DOS 6.22 `INTERLNK.EXE /DRIVES:1 /NOPRINTER /COM:1
+/BAUD:9600`. Interloper served `fixture.img` from `../fixture.py` as unit 2,
+the client's only remote drive. The traces have no `MARK` lines. Both
+decode with no anomalies and no lost packets, and every READ matches the
+image:
+
+```sh
+emu/dos622/fixture.py /tmp/fx
+emu/dos622/decode.py emu/dos622/captures/hardware/phaistos-9600.log --image 2=/tmp/fx/fixture.img
+```
+
+| File | Notes |
+|------|-------|
+| `hardware/phaistos-9600.log` | Connection at boot, `DIR` of the root and of `SUB\DEEP`, `COPY X:\*.* C:\CAP` (BIG.BIN's 127-sector READ streams at the full line rate, about 8.5 s per 8 KB block), four refused WRITEs (`8100`) from `COPY`, `DEL` and `MD` on the remote drive, then a client reboot that reconnects on the open port and runs `DIR` again. |
+| `hardware/phaistos-restart-9600.log` | A new Interloper process after a server restart: the same client reconnects without DRIVE-INFO and runs `DIR`. |
+
 ## Recording a new capture
 
 ```sh

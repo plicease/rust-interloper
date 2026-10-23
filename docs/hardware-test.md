@@ -20,20 +20,24 @@ speeds only once 9600 passes.
 ## Linux side
 
 Build Interloper and the fixture image, a 1.44 MB FAT12 floppy image with
-the same files the emulator tests use (see `emu/dos622/README.md`), plus
-their SHA-256 sums and the image's own sum:
+the same files the emulator tests use (see `emu/dos622/README.md`). To
+check the copies on the DOS machine itself, the image also carries a DOS
+`md5sum`: [md5sum16](https://github.com/plicease/dos-md5sum16) (MIT), whose
+releases include a prebuilt `md5sum.exe`.
 
 ```sh
 cargo build --release
-mkdir -p ~/il-hw
-PYTHONPATH=emu/dos622 python3 -c 'import sys, build; build.fat12_floppy(sys.argv[1], build.fixture_files(), label="FIXTURE", readonly=["READONLY.TXT"])' ~/il-hw/fixture.img
-PYTHONPATH=emu/dos622 python3 -c 'import hashlib, build; [print(hashlib.sha256(d).hexdigest() + "  " + n) for n, d in sorted(build.fixture_files().items()) if d is not None]' > ~/il-hw/FIXTURE.SHA256
+curl -LO https://github.com/plicease/dos-md5sum16/releases/download/v0.01/md5sum.exe
+emu/dos622/fixture.py ~/il-hw --md5sum md5sum.exe
 sha256sum ~/il-hw/fixture.img > ~/il-hw/image.sha256
 ```
 
-The image is identical to the emulator's `dos622-server/fixture.img`. Paths
-in `FIXTURE.SHA256` are relative to the image's root: `SUB/NESTED.TXT` is
-`X:\SUB\NESTED.TXT` on DOS.
+`fixture.py` writes `fixture.img` and `FIXTURE.SHA256`, the SHA-256 of each
+file in it. With `--md5sum`, the image's root also holds `MD5SUM.EXE` and
+`MD5SUM`, the MD5 of each root file. Without it, the image is identical to
+the emulator's `dos622-server/fixture.img`. Paths in `FIXTURE.SHA256` are
+relative to the image's root: `SUB/NESTED.TXT` is `X:\SUB\NESTED.TXT` on
+DOS.
 
 Start the server, with a new trace file for each run:
 
@@ -62,9 +66,11 @@ machine boots, INTERLNK connects at load and shows its drive table (such as
    `DIR X:\SUB\DEEP`. Expect `README.TXT`, `EMPTY.DAT` (0 bytes),
    `SECTOR.BIN` (512), `SECTOR1.BIN` (513), `BIG.BIN` (66,536),
    `READONLY.TXT`, `SUB` and `EMPTYDIR`.
-2. **COPY:** `MD C:\CAP`, `COPY X:\*.* C:\CAP` and
-   `COPY X:\SUB\NESTED.TXT C:\CAP`. Compare each copy with its remote
-   original, such as `FC /B X:\BIG.BIN C:\CAP\BIG.BIN`.
+2. **COPY:** `MD C:\CAP`, `COPY X:\*.* C:\CAP`, then `C:`, `CD \CAP` and
+   `MD5SUM -c MD5SUM`. Every file must print `OK`. This checks the copies
+   on the DOS machine's own disk, independently of the link.
+   (`FC /B X:\*.* C:\CAP\*.*` is weaker: it only shows that two reads
+   over the link agree.)
 3. **Writes are refused:** `COPY C:\AUTOEXEC.BAT X:\` must fail with a
    write-protect error; answer `F` (Fail). Also try `DEL X:\README.TXT` and
    `MD X:\NEW`.
@@ -88,8 +94,6 @@ emu/dos622/decode.py ~/il-hw/9600.trace | grep -c "not echoed"
 - `decode.py --image` checks every sector Interloper sent against the image
   and must report `0 mismatched`.
 - Each `not echoed` line is a lost packet. At 9600 there should be none.
-- For a full end-to-end check, move `C:\CAP` to Linux (on a floppy or CF
-  card) and run `sha256sum -c FIXTURE.SHA256` in it.
 
 ## Faster speeds
 
@@ -106,6 +110,18 @@ then stay in echo mode, at about 2.3 KB/s (see "Lost packets and echo mode"
 in `protocol.md`). Whether a real machine does the same is an open
 question. A V20 with a UART that has no FIFO may well do it too.
 
-Keep the traces and `.stderr` files. They are the first captures from real
-hardware, and should settle the guessed speed-change timing in
-`protocol.md`.
+Keep the traces and `.stderr` files. They should settle the guessed
+speed-change timing in `protocol.md`.
+
+## Results
+
+| Date | Machine | Speed | Result |
+|------|---------|-------|--------|
+| 2026-10-23 | Phaistos (NuXT, NEC V20), MS-DOS 6.22, served from a Linux `/dev/ttyS0` | 9600 | Pass |
+
+At 9600 on Phaistos every test above passed: DIR, COPY with
+`MD5SUM -c` reporting every file `OK`, four writes refused with the image
+unchanged, a client reboot and a server restart. The traces decode with no
+anomalies and no lost packets, every READ matched the image, and the
+127-sector READ for `BIG.BIN` ran at the full line rate (about 8.5 s per
+8 KB block). The traces are in `emu/dos622/captures/hardware/`.

@@ -65,6 +65,9 @@ read-only attribute), `SUB\NESTED.TXT`, `SUB\DEEP\DEEP.TXT` and the empty
 directory `EMPTYDIR`. Their SHA-256 sums are in
 `dos622-server/FIXTURE.SHA256`.
 
+`fixture.py OUT` writes the same `fixture.img` and `FIXTURE.SHA256` without
+building the VMs, for testing on real hardware (`docs/hardware-test.md`).
+
 ## Capturing traffic
 
 ### Scripted session
