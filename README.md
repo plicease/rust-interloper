@@ -38,3 +38,5 @@ On the DOS side, load the driver from `CONFIG.SYS`, for example
 `emu/dos622/` builds MS-DOS 6.22 VMs for 86Box and runs scripted
 sessions. With `--interloper`, `capture.py` serves the client VM from
 Interloper instead of the INTERSVR VM; see `emu/dos622/README.md`.
+`docs/hardware-test.md` covers testing with a real DOS machine over a
+serial cable.
