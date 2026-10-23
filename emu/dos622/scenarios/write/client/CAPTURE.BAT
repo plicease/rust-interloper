@@ -1,0 +1,23 @@
+@ECHO OFF
+REM Writes through INTERLNK: create, overwrite, delete and MD on D: (the
+REM server's C:), then a copy to E: (the server's write-protected B:), which
+REM fails. capture.py runs this under COMMAND /F, so the critical error is
+REM answered with Fail instead of waiting for a key.
+MODE COM2:9600,N,8,1 > NUL
+ECHO CAPTURE-START> COM2
+ECHO COPY C:\CONFIG.SYS D:\NEW.TXT> COM2
+COPY C:\CONFIG.SYS D:\NEW.TXT
+ECHO COPY C:\AUTOEXEC.BAT D:\NEW.TXT> COM2
+COPY C:\AUTOEXEC.BAT D:\NEW.TXT
+ECHO COPY D:\FIXTURE\BIG.BIN D:\BIG2.BIN> COM2
+COPY D:\FIXTURE\BIG.BIN D:\BIG2.BIN
+ECHO DEL D:\NEW.TXT> COM2
+DEL D:\NEW.TXT
+ECHO MD D:\NEWDIR> COM2
+MD D:\NEWDIR
+ECHO COPY C:\CONFIG.SYS E:\NEW.TXT> COM2
+COPY C:\CONFIG.SYS E:\NEW.TXT
+ECHO DIR D:\> COM2
+DIR D:\
+ECHO CAPTURE-DONE> COM2
+ECHO CAPTURE-DONE

@@ -1,0 +1,44 @@
+[General]
+vid_renderer = qt_software
+
+[Machine]
+machine = ibmatami
+cpu_family = 286
+cpu_speed = 8000000
+cpu_multi = 1
+cpu_use_dynarec = 0
+fpu_type = none
+mem_size = 1024
+time_sync = local
+
+[Video]
+gfxcard = vga
+
+[Input devices]
+keyboard_type = keyboard_at
+mouse_type = none
+
+[Storage controllers]
+hdc_1 = ide_isa
+
+[Hard disks]
+hdd_01_parameters = 63, 16, 65, 0, ide
+hdd_01_fn = dos622.img
+hdd_01_ide_channel = 0:0
+hdd_01_speed = 1997_5400rpm
+
+[Floppy and CD-ROM drives]
+@FDD@
+[Ports (COM & LPT)]
+serial1_device = stdio
+serial2_device = stdio
+
+[Virtual Console (COM) #1]
+mode = 3
+command = ln -sfn "$PTY" "@PTY@"
+command_terminal = 0
+
+[Virtual Console (COM) #2]
+mode = 3
+command = ln -sfn "$PTY" "@PTY2@"
+command_terminal = 0
